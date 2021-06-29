@@ -7,7 +7,11 @@
     "ios": "react-native run-ios",
     "start": "react-native start",
     "test": "jest",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "detox-build-android": "detox build -c android",
+    "detox-build-ios": "detox build -c ios",
+    "detox-test-android": "detox test -c android --maxWorkers 1 --headless",
+    "detox-test-ios": "detox test -c ios --maxWorkers 1"
   },
   "dependencies": {
     "@snowplow/react-native-tracker": "file:..",
@@ -19,12 +23,22 @@
     "@babel/runtime": "^7.14.5",
     "@react-native-community/eslint-config": "^2.0.0",
     "babel-jest": "^27.0.2",
+    "detox": "^18.18.1",
     "eslint": "^7.28.0",
+    "eslint-plugin-detox": "^1.0.0",
+    "eslint-plugin-jest": "^24.3.6",
     "jest": "^27.0.4",
     "metro-react-native-babel-preset": "^0.66.0",
     "react-test-renderer": "^17.0.2"
   },
+  "resolutions": {
+    "@jest/create-cache-key-function": "^27.0.2"
+  },
   "jest": {
-    "preset": "react-native"
+    "preset": "react-native",
+    "verbose": true,
+    "transformIgnorePatterns": [
+      "node_modules/(?!(@react-native|react-native|@snowplow/react-native-tracker|react-native-button)/)"
+    ]
   }
 }

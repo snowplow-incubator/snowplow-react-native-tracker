@@ -1,0 +1,90 @@
+name: e2e-ios
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: macos-10.15
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Setup Node
+      uses: actions/setup-node@v2
+      with:
+        node-version: 14
+
+    - name: Get and run Micro in background
+      run: |
+        curl -o micro.jar -L https://github.com/snowplow-incubator/snowplow-micro/releases/download/micro-1.1.2/snowplow-micro-1.1.2.jar
+        java -jar micro.jar --collector-config DemoApp/tests/micro/micro.conf --iglu DemoApp/tests/micro/iglu.json &
+
+    - name: Wait on Micro endpoint
+      timeout-minutes: 2
+      run: while ! nc -z '0.0.0.0' 9090; do sleep 1; done
+
+    - name: Prepare DemoApp for Micro
+      working-directory: DemoApp
+      run: |
+        perl -i -pe "s/^.*protocol:\K.*/ \'http\'\,/" App.js
+        perl -i -pe "s/^.*endpoint:\K.*/ \'0.0.0.0:9090\'\,/" App.js
+
+    - name: Install node modules
+      run: npm ci
+
+    - name: Build Tracker
+      run: npm run build
+
+    - name: Install node modules for DemoApp
+      working-directory: DemoApp
+      run: yarn install --frozen-lockfile
+
+    - name: Install applesimutils
+      run: |
+        brew tap wix/brew
+        brew install applesimutils
+
+    - name: Use build cache
+      uses: mikehardy/buildcache-action@v1
+
+    - name: Install Pods
+      working-directory: DemoApp/ios
+      run: |
+        pod install
+
+    - name: Detox build ios
+      working-directory: DemoApp
+      run: yarn detox-build-ios
+
+    - name: Start Metro
+      working-directory: DemoApp
+      run: yarn start &
+
+    - name: Wait on metro endpoint
+      timeout-minutes: 2
+      run: while ! nc -z '0.0.0.0' 8081; do sleep 1; done
+
+    - name: Detox Jest ios
+      id: dj
+      uses: nick-invision/retry@v2
+      with:
+        timeout_minutes: 15
+        max_attempts: 3
+        command: |
+          cd DemoApp
+          yarn detox-test-ios
+          yarn test
+
+    - name: Log events if Detox-Jest failed
+      if: ${{ failure() && steps.dj.outcome == 'failure' }}
+      run: |
+        echo '-- Bad events --'
+        curl -s -o - 'http://0.0.0.0:9090/micro/bad' | jq '.'
+        echo '-- Good events --'
+        curl -s -o - 'http://0.0.0.0:9090/micro/good' | jq '.'

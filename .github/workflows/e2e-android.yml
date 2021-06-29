@@ -1,0 +1,103 @@
+name: e2e-android
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: macos-10.15
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Setup Node
+      uses: actions/setup-node@v2
+      with:
+        node-version: 14
+
+    - name: Setup Java
+      uses: actions/setup-java@v2
+      with:
+        distribution: 'adopt'
+        java-version: '8'
+
+    - name: Get and run Micro in background
+      run: |
+        curl -o micro.jar -L https://github.com/snowplow-incubator/snowplow-micro/releases/download/micro-1.1.2/snowplow-micro-1.1.2.jar
+        java -jar micro.jar --collector-config DemoApp/tests/micro/micro.conf --iglu DemoApp/tests/micro/iglu.json &
+
+    - name: Wait on Micro endpoint
+      timeout-minutes: 2
+      run: while ! nc -z '0.0.0.0' 9090; do sleep 1; done
+
+    - name: Prepare DemoApp for Micro
+      working-directory: DemoApp
+      run: |
+        perl -i -pe "s/^.*protocol:\K.*/ \'http\'\,/" App.js
+        perl -i -pe "s/^.*endpoint:\K.*/ \'10.0.2.2:9090\'\,/" App.js
+
+    - name: Install node modules
+      run: npm ci
+
+    - name: Build Tracker
+      run: npm run build
+
+    - name: Install node modules for DemoApp
+      working-directory: DemoApp
+      run: yarn install --frozen-lockfile
+
+    - name: Get AOSP system image and create Android virtual device
+      run: |
+        echo 'y' | ${ANDROID_SDK_ROOT}/tools/bin/sdkmanager "system-images;android-28;default;x86_64"
+        echo 'no' | $ANDROID_SDK_ROOT/tools/bin/avdmanager create avd --force --name Pixel_API_28_AOSP -d pixel --package "system-images;android-28;default;x86_64"
+
+    - name: Start Android emulator
+      timeout-minutes: 10
+      run: |
+        echo "Starting emulator.."
+        nohup $ANDROID_HOME/emulator/emulator -avd Pixel_API_28_AOSP -no-audio -no-snapshot -no-window &
+        $ANDROID_HOME/platform-tools/adb wait-for-device shell 'while [[ -z $(getprop sys.boot_completed | tr -d '\r') ]]; do sleep 1; done; input keyevent 82'
+        $ANDROID_HOME/platform-tools/adb devices
+        echo "Emulator started!"
+
+    - name: Use gradle cache
+      uses: actions/cache@v2
+      with:
+        path: ~/.gradle/caches
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}-v1
+
+    - name: Detox build android
+      working-directory: DemoApp
+      run: yarn detox-build-android
+
+    - name: Start Metro
+      working-directory: DemoApp
+      run: yarn start &
+
+    - name: Wait on metro endpoint
+      timeout-minutes: 2
+      run: while ! nc -z '0.0.0.0' 8081; do sleep 1; done
+
+    - name: Detox Jest android
+      id: dj
+      uses: nick-invision/retry@v2
+      with:
+        timeout_minutes: 15
+        max_attempts: 3
+        command: |
+          cd DemoApp
+          yarn detox-test-android
+          yarn test
+
+    - name: Log events if Detox-Jest failed
+      if: ${{ failure() && steps.dj.outcome == 'failure' }}
+      run: |
+        echo '-- Bad events --'
+        curl -s -o - 'http://0.0.0.0:9090/micro/bad' | jq '.'
+        echo '-- Good events --'
+        curl -s -o - 'http://0.0.0.0:9090/micro/good' | jq '.'
